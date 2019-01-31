@@ -5,11 +5,18 @@ import logging
 import requests
 import sys
 import pprint
+from datetime import datetime, timedelta
+import maya
+import time
+import json
+import base64
+from zenroom import zenroom
 
 logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
 
 POLICYSTORE_PREFIX = '/twirp/decode.iot.policystore.PolicyStore/'
 ENCODER_PREFIX = '/twirp/decode.iot.encoder.Encoder/'
+DATASTORE_PREFIX = '/twirp/decode.iot.datastore.Datastore/'
 
 
 def main():
@@ -78,6 +85,7 @@ def run(args):
     device_token = args.device_token
     policystore_url = args.policystore
     encoder_url = args.encoder
+    datastore_url = args.datastore
 
     # create a policy
     policy_credentials = create_policy(policystore_url,
@@ -92,6 +100,8 @@ def run(args):
             policy = p
             break
     else:
+        # clean up the previously created policy
+        delete_policy(policystore_url, policy_credentials, verbose)
         sys.exit(
             "Unable to find created policy in list read from policy store")
 
@@ -99,11 +109,20 @@ def run(args):
     stream_credentials = create_stream(
         encoder_url, create_stream_request(device_token, policy), verbose)
 
+    #  read some data from the datastore for the policy
+    read_request = create_read_request(policy)
+    success = read_data(datastore_url, read_request, verbose)
+
     # delete the created stream
     delete_stream(encoder_url, stream_credentials, verbose)
 
     # delete the created policy
     delete_policy(policystore_url, policy_credentials, verbose)
+
+    if success:
+        logging.info('SUCCESS: All tests succeeded')
+    else:
+        sys.exit('FAILED: Failed to read data')
 
 
 def create_policy_request():
@@ -148,6 +167,14 @@ def create_stream_request(device_token, policy):
     }
 
 
+def create_read_request(policy):
+    """Return the json object for a read request"""
+    start_time = maya.MayaDT.from_datetime(datetime.now() -
+                                           timedelta(minutes=15)).rfc3339()
+
+    return {'policy_id': policy['policy_id'], 'start_time': start_time}
+
+
 def headers():
     """Return static headers that all requests need"""
     return {
@@ -162,9 +189,8 @@ def create_policy(policystore_url, create_policy_request, verbose):
     This sends a request to the policystore to create a new policy using the
     static configuration defined previously in this script."""
 
-    logging.info('Creating policy')
-
     if verbose:
+        logging.info('Creating policy')
         pprint.pprint(create_policy_request)
 
     create_url = policystore_url + POLICYSTORE_PREFIX + 'CreateEntitlementPolicy'
@@ -172,16 +198,16 @@ def create_policy(policystore_url, create_policy_request, verbose):
     r = requests.post(
         create_url, headers=headers(), json=create_policy_request)
     if r.status_code != 200:
-        logging.error(f'Unexpected response: {r.status_code}')
+        logging.error(f'ERROR: Unexpected response: {r.status_code}')
         pprint.pprint(r.json())
 
         sys.exit('Failed to create policy')
 
     resp = r.json()
 
-    logging.info('Created policy successfully')
     logging.info(
-        f'Policy ID: {resp["policy_id"]}, Policy Token: {resp["token"]}')
+        f'SUCCESS: Created policy - ID: {resp["policy_id"]}, Token: {resp["token"]}'
+    )
 
     return resp
 
@@ -193,18 +219,19 @@ def delete_policy(policystore_url, policy_credentials, verbose):
     requires the use of the generated ID and token from a previous create
     call."""
 
-    logging.info('Deleting policy')
-
     if verbose:
+        logging.info('Deleting policy')
         pprint.pprint(policy_credentials)
 
     delete_url = policystore_url + POLICYSTORE_PREFIX + 'DeleteEntitlementPolicy'
 
     r = requests.post(delete_url, headers=headers(), json=policy_credentials)
     if r.status_code != 200:
-        logging.error(f'Unexpected response: {r.status_code}')
+        logging.error(f'ERROR: Unexpected response: {r.status_code}')
         pprint.pprint(r.json())
         sys.exit('Failed to delete policy')
+
+    logging.info('SUCCESS: Deleted policy')
 
 
 def list_policies(policystore_url, verbose):
@@ -213,15 +240,18 @@ def list_policies(policystore_url, verbose):
     This sends a request to the policystore to read a list of all available
     policies."""
 
-    logging.info('Listing policies')
+    if verbose:
+        logging.info('Listing policies')
 
     list_url = policystore_url + POLICYSTORE_PREFIX + 'ListEntitlementPolicies'
 
     r = requests.post(list_url, headers=headers(), json={})
     if r.status_code != 200:
-        logging.error(f'Unexpected response: {r.status_code}')
+        logging.error(f'ERROR: Unexpected response: {r.status_code}')
         pprint.pprint(r.json())
         sys.exit('Failed to list policies')
+
+    logging.info('SUCCESS: Listed policies')
 
     resp = r.json()
 
@@ -235,25 +265,24 @@ def list_policies(policystore_url, verbose):
 def create_stream(encoder_url, request, verbose):
     """Create a new encoded stream"""
 
-    logging.info('Creating encoded stream')
-
     if verbose:
+        logging.info('Creating encoded stream')
         pprint.pprint(request)
 
     create_url = encoder_url + ENCODER_PREFIX + 'CreateStream'
 
     r = requests.post(create_url, headers=headers(), json=request)
     if r.status_code != 200:
-        logging.error(f'Unexpected response: {r.status_code}')
+        logging.error(f'ERROR: Unexpected response: {r.status_code}')
         pprint.pprint(r.json())
 
         sys.exit('Failed to create policy')
 
     resp = r.json()
 
-    logging.info('Created stream successfully')
     logging.info(
-        f'Stream ID: {resp["stream_uid"]}, Stream Token: {resp["token"]}')
+        f'SUCCESS: Created stream - ID: {resp["stream_uid"]}, Token: {resp["token"]}'
+    )
 
     return resp
 
@@ -261,18 +290,89 @@ def create_stream(encoder_url, request, verbose):
 def delete_stream(encoder_url, stream_credentials, verbose):
     """Delete a stream on being given the credentials for that stream"""
 
-    logging.info('Deleting stream')
-
     if verbose:
+        logging.info('Deleting stream')
         pprint.pprint(stream_credentials)
 
     delete_url = encoder_url + ENCODER_PREFIX + 'DeleteStream'
 
     r = requests.post(delete_url, headers=headers(), json=stream_credentials)
     if r.status_code != 200:
-        logging.error(f'Unexpected response: {r.status_code}')
+        logging.error(f'ERROR: Unexpected response: {r.status_code}')
         pprint.pprint(r.json())
         sys.exit('Failed to delete stream')
+
+    logging.info('SUCCESS: Stream deleted')
+
+
+def read_data(datastore_url, read_request, verbose):
+    """Attempt to read encrypted data from the datastore"""
+
+    logging.info('Checking if data is available')
+
+    if verbose:
+        pprint.pprint(read_request)
+
+    read_url = datastore_url + DATASTORE_PREFIX + 'ReadData'
+
+    timeout = time.time() + 60 * 2  # 2 minutes from now
+
+    while True:
+        print('.', end='', flush=True)
+        r = requests.post(read_url, headers=headers(), json=read_request)
+        if r.status_code != 200:
+            logging.error(f'ERROR: Unexpected response: {r.status_code}')
+            pprint.pprint(r.json())
+            return False
+
+        resp = r.json()
+
+        if verbose:
+            pprint.pprint(resp)
+
+        if len(resp['events']) > 0:
+            print('')
+            logging.info('SUCCESS: Read encrypted data')
+            return decrypt_data(resp['events'][0], verbose)
+
+        if time.time() > timeout:
+            print('')
+            logging.warning(
+                'ERROR: Failed to read any data for the policy. Please check device token and try again'
+            )
+            return False
+
+        time.sleep(10)
+
+    return True
+
+
+def decrypt_data(event, verbose):
+    keys = json.dumps({
+        'community_seckey':
+        r'D19GsDTGjLBX23J281SNpXWUdu+oL6hdAJ0Zh6IrRHA='
+    })
+
+    with open('decrypt.lua') as file:
+        script = file.read()
+
+    decoded = base64.decodebytes(event['data'].encode())
+    result = zenroom.execute(script.encode(), keys=keys.encode(), data=decoded)
+    packet = json.loads(result)
+    data = json.loads(packet['data'])
+
+    if verbose:
+        logging.info("Decrypted data")
+        pprint.pprint(data)
+
+    # verify the presence of an expected key
+    if 'token' in data:
+        logging.info('SUCCESS: Decrypted packet correctly')
+        return True
+    else:
+        logging.info('ERROR: Unexpected content after decryption')
+        pprint.pprint(data)
+        return False
 
 
 if __name__ == "__main__":
