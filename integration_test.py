@@ -9,6 +9,8 @@ import pprint
 logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
 
 POLICYSTORE_PREFIX = '/twirp/decode.iot.policystore.PolicyStore/'
+ENCODER_PREFIX = '/twirp/decode.iot.encoder.Encoder/'
+
 
 def main():
     help = """
@@ -23,15 +25,39 @@ def main():
         * decrypt the data using zenroom and display this to the screen
         * clean up all created resources"""
 
-    parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description=help)
-    parser.add_argument('-v', '--verbose', action='store_true', dest='verbose', help='enable verbose mode', default=False)
-    parser.add_argument('--device-token', dest='device_token', help='device token we wish to use for testing', required=True)
-    parser.add_argument('--datastore', dest='datastore', help='URL of the encrypted datastore', default='http://localhost:8080')
-    parser.add_argument('--policystore', dest='policystore', help='URL of the policy store', default='http://localhost:8082')
-    parser.add_argument('--encoder', dest='encoder', help='URL of the stream encoder', default='http://localhost:8081')
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter, description=help)
+    parser.add_argument(
+        '-v',
+        '--verbose',
+        action='store_true',
+        dest='verbose',
+        help='enable verbose mode',
+        default=False)
+    parser.add_argument(
+        '--device-token',
+        dest='device_token',
+        help='device token we wish to use for testing',
+        required=True)
+    parser.add_argument(
+        '--datastore',
+        dest='datastore',
+        help='URL of the encrypted datastore',
+        default='http://localhost:8080')
+    parser.add_argument(
+        '--policystore',
+        dest='policystore',
+        help='URL of the policy store',
+        default='http://localhost:8082')
+    parser.add_argument(
+        '--encoder',
+        dest='encoder',
+        help='URL of the stream encoder',
+        default='http://localhost:8081')
     parser.set_defaults(func=run)
     args = parser.parse_args()
     args.func(args)
+
 
 def run(args):
     """This is the list of operations this integration test performs.
@@ -48,51 +74,89 @@ def run(args):
     logging.info('Starting integration test')
 
     # read configuration from our args
+    verbose = args.verbose
     device_token = args.device_token
     policystore_url = args.policystore
+    encoder_url = args.encoder
 
     # create a policy
-    policy = create_policy(policystore_url, create_policy_request())
+    policy_credentials = create_policy(policystore_url,
+                                       create_policy_request(), verbose)
 
     # read the policies back from the policystore
-    policies = list_policies(policystore_url)
+    policies = list_policies(policystore_url, verbose)
 
-    # verify the list of policies contains the policy we initially created
-    if policy['policy_id'] not in list(map(lambda p: p['policy_id'], policies['policies'])):
-        sys.exit(f'Policy {policy["policy_id"]} not found in list read from policystore')
+    # search for our created policy in the returned list
+    for p in policies['policies']:
+        if policy_credentials['policy_id'] == p['policy_id']:
+            policy = p
+            break
+    else:
+        sys.exit(
+            "Unable to find created policy in list read from policy store")
+
+    # create a stream
+    stream_credentials = create_stream(
+        encoder_url, create_stream_request(device_token, policy), verbose)
+
+    # delete the created stream
+    delete_stream(encoder_url, stream_credentials, verbose)
 
     # delete the created policy
-    delete_policy(policystore_url, policy)
+    delete_policy(policystore_url, policy_credentials, verbose)
 
 
 def create_policy_request():
     """Return a static configuration for a policy"""
     return {
-                'public_key': 'BBLewg4VqLR38b38daE7Fj\/uhr543uGrEpyoPFgmFZK6EZ9g2XdK\/i65RrSJ6sJ96aXD3DJHY3Me2GJQO9\/ifjE=',
-                'label': 'Integration Test Policy',
-                'operations': [
-                    {
-                        'sensor_id': 10,
-                        'action': 'SHARE',
-                    },
-                    {
-                        'sensor_id': 53,
-                        'action': 'BIN',
-                        'bins': [30.0,60.0,90.0]
-                    },
-                    {
-                        'sensor_id': 55,
-                        'action': 'MOVING_AVG',
-                        'interval': 300
-                    }
-                ]
-            }
+        'public_key':
+        r'BBLewg4VqLR38b38daE7Fj\/uhr543uGrEpyoPFgmFZK6EZ9g2XdK\/i65RrSJ6sJ96aXD3DJHY3Me2GJQO9\/ifjE=',
+        'label':
+        'Integration Test Policy',
+        'operations': [{
+            'sensor_id': 10,
+            'action': 'SHARE',
+        }, {
+            'sensor_id': 53,
+            'action': 'BIN',
+            'bins': [30.0, 60.0, 90.0]
+        }, {
+            'sensor_id': 55,
+            'action': 'MOVING_AVG',
+            'interval': 300
+        }]
+    }
+
+
+def create_stream_request(device_token, policy):
+    """Return the json object we must send to create a stream"""
+    return {
+        'device_token':
+        device_token,
+        'policy_id':
+        policy['policy_id'],
+        'recipient_public_key':
+        r'BBLewg4VqLR38b38daE7Fj\/uhr543uGrEpyoPFgmFZK6EZ9g2XdK\/i65RrSJ6sJ96aXD3DJHY3Me2GJQO9\/ifjE=',
+        'location': {
+            'longitude': 2.156746,
+            'latitude': 41.401642
+        },
+        'exposure':
+        'INDOOR',
+        'operations':
+        policy['operations']
+    }
+
 
 def headers():
     """Return static headers that all requests need"""
-    return {'user-agent': 'integration-tester', 'content-type': 'application/json'}
+    return {
+        'user-agent': 'integration-tester',
+        'content-type': 'application/json',
+    }
 
-def create_policy(policystore_url, create_policy_request):
+
+def create_policy(policystore_url, create_policy_request, verbose):
     """Create a new entitlement policy.
 
     This sends a request to the policystore to create a new policy using the
@@ -100,19 +164,29 @@ def create_policy(policystore_url, create_policy_request):
 
     logging.info('Creating policy')
 
+    if verbose:
+        pprint.pprint(create_policy_request)
+
     create_url = policystore_url + POLICYSTORE_PREFIX + 'CreateEntitlementPolicy'
 
-    r = requests.post(create_url, headers=headers(), json=create_policy_request)
+    r = requests.post(
+        create_url, headers=headers(), json=create_policy_request)
     if r.status_code != 200:
-        sys.exit(f'Unexpected response: {r.status_code}')
+        logging.error(f'Unexpected response: {r.status_code}')
+        pprint.pprint(r.json())
+
+        sys.exit('Failed to create policy')
 
     resp = r.json()
 
-    logging.info(f'Generated policy ID: {resp["policy_id"]}')
+    logging.info('Created policy successfully')
+    logging.info(
+        f'Policy ID: {resp["policy_id"]}, Policy Token: {resp["token"]}')
 
-    return r.json()
+    return resp
 
-def delete_policy(policystore_url, policy):
+
+def delete_policy(policystore_url, policy_credentials, verbose):
     """Delete existing entitlement policy.
 
     This sends a request to the policystore to delete an existing policy. This
@@ -121,13 +195,19 @@ def delete_policy(policystore_url, policy):
 
     logging.info('Deleting policy')
 
+    if verbose:
+        pprint.pprint(policy_credentials)
+
     delete_url = policystore_url + POLICYSTORE_PREFIX + 'DeleteEntitlementPolicy'
 
-    r = requests.post(delete_url, headers=headers(), json=policy)
+    r = requests.post(delete_url, headers=headers(), json=policy_credentials)
     if r.status_code != 200:
-        sys.exit(f'Unexpected response: {r.status_code}')
+        logging.error(f'Unexpected response: {r.status_code}')
+        pprint.pprint(r.json())
+        sys.exit('Failed to delete policy')
 
-def list_policies(policystore_url):
+
+def list_policies(policystore_url, verbose):
     """List available entitlement policies
 
     This sends a request to the policystore to read a list of all available
@@ -139,14 +219,61 @@ def list_policies(policystore_url):
 
     r = requests.post(list_url, headers=headers(), json={})
     if r.status_code != 200:
-        sys.exit(f'Unexpected response: {r.status_code}')
+        logging.error(f'Unexpected response: {r.status_code}')
+        pprint.pprint(r.json())
+        sys.exit('Failed to list policies')
 
     resp = r.json()
-    logging.info('Policies retrieved')
 
-    pprint.pprint(resp)
+    if verbose:
+        logging.info('Policies retrieved')
+        pprint.pprint(resp)
 
     return resp
 
-if __name__=="__main__":
+
+def create_stream(encoder_url, request, verbose):
+    """Create a new encoded stream"""
+
+    logging.info('Creating encoded stream')
+
+    if verbose:
+        pprint.pprint(request)
+
+    create_url = encoder_url + ENCODER_PREFIX + 'CreateStream'
+
+    r = requests.post(create_url, headers=headers(), json=request)
+    if r.status_code != 200:
+        logging.error(f'Unexpected response: {r.status_code}')
+        pprint.pprint(r.json())
+
+        sys.exit('Failed to create policy')
+
+    resp = r.json()
+
+    logging.info('Created stream successfully')
+    logging.info(
+        f'Stream ID: {resp["stream_uid"]}, Stream Token: {resp["token"]}')
+
+    return resp
+
+
+def delete_stream(encoder_url, stream_credentials, verbose):
+    """Delete a stream on being given the credentials for that stream"""
+
+    logging.info('Deleting stream')
+
+    if verbose:
+        pprint.pprint(stream_credentials)
+
+    delete_url = encoder_url + ENCODER_PREFIX + 'DeleteStream'
+
+    r = requests.post(delete_url, headers=headers(), json=stream_credentials)
+    if r.status_code != 200:
+        logging.error(f'Unexpected response: {r.status_code}')
+        pprint.pprint(r.json())
+        sys.exit('Failed to delete stream')
+
+
+if __name__ == "__main__":
     main()
