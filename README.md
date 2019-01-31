@@ -1,6 +1,16 @@
 # DECODE integration test script
 
-## Example
+## Requirements
+
+The included script will only work on a Linux (amd64) system. This is because we use a version of Zenroom that is only compiled for this platform. In addition this script has only been tested using Python 3 (tested using 3.6.7).
+
+## Getting Started
+
+Included in this repo is the actual test script (`integration_test.py`), a Lua decryption script used by Zenroom, and a requirements file for `pip`.
+
+To install dependencies, first create a new virtualenv, and activate it, then install dependencies using: `pip install -r requirements.txt`
+
+## Example Invocation
 
 ```bash
 ./integration_test.py --device-token=ab123ba --verbose
